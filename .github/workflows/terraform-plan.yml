@@ -1,0 +1,72 @@
+name: DeployTerraform
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform
+          path: ${{ github.workspace }}//services
+  
+  deploy-infra-dev:
+    name: Deploy Infra Dev
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/services
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+    environment:
+      name: dev
+
+    needs: build
+    steps:
+      - name: Download Terraform
+        uses: actions/download-artifact@v3
+        with:
+          name: terraform
+          path: ${{ github.workspace }}//services
+
+      - name: Download tfstate
+        id: download-tfstate
+        run: |
+          aws s3api head-object --bucket terraform-states-control --key githubactions-terraform-aws/${{ secrets.RESOURCE_PREFIX }}/terraform.tfstate || not_exist=true
+          if [[ ! $not_exist ]]; then
+            aws s3 cp s3://terraform-states-control/githubactions-terraform-aws/${{ secrets.RESOURCE_PREFIX }}/terraform.tfstate .
+          fi
+      
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+      
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+      
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -var "prefix=${{ secrets.RESOURCE_PREFIX }}" -lock=false
+      
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -var "prefix=${{ secrets.RESOURCE_PREFIX }}" -lock=false
+
+      - name: Upload tfstate
+        id: upload-tfstate
+        run: aws s3 cp terraform.tfstate s3://terraform-states-control/githubactions-terraform-aws/${{ secrets.RESOURCE_PREFIX }}/terraform.tfstate
